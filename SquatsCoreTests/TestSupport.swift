@@ -26,32 +26,58 @@ enum Weekday {
     static let sunday = 1, monday = 2, tuesday = 3, wednesday = 4, thursday = 5, friday = 6, saturday = 7
 }
 
+let monWedFri: Set<Int> = [Weekday.monday, Weekday.wednesday, Weekday.friday]
+
 @MainActor
-func makeStore() -> WorkoutStore {
-    WorkoutStore(fileURL: nil, calendar: TestCalendar.calendar)
+func makeStore(now: Date = TestCalendar.date("2026-09-28", hour: 10)) -> WorkoutStore {
+    let store = WorkoutStore(fileURL: nil, calendar: TestCalendar.calendar)
+    store.clock = { now }
+    return store
 }
 
 func makeProgram(
-    trainingMax: Double = 100,
-    weekdays: Set<Int> = [Weekday.monday, Weekday.wednesday, Weekday.friday],
+    squat: Double = 100,
+    bench: Double = 60,
+    deadlift: Double = 140,
+    weekdays: Set<Int> = monWedFri,
     start: String = "2026-09-28",
-    advanceMode: AdvanceMode = .perTrainingWeek,
-    warmups: Bool = true
+    options: FiveThreeOneBeginners.Options = .init(),
+    unit: WeightUnit = .kg,
+    rounding: Double = 2.5
 ) -> Program {
-    Program(
-        name: "5/3/1 Squat",
-        kind: .fiveThreeOne,
-        unit: .kg,
-        createdAt: TestCalendar.date(start),
+    FiveThreeOneBeginners.makeProgram(
+        name: "5/3/1 for Beginners",
+        unit: unit,
+        rounding: rounding,
+        lifts: [
+            .init(liftID: "squat", trainingMax: squat),
+            .init(liftID: "bench", trainingMax: bench),
+            .init(liftID: "deadlift", trainingMax: deadlift),
+        ],
+        options: options,
+        weekdays: weekdays,
         startDate: TestCalendar.date(start),
-        schedule: WeeklySchedule(sessionsPerWeek: weekdays.count, weekdays: weekdays),
-        fiveThreeOne: FiveThreeOneSettings(
-            startingTrainingMax: trainingMax,
-            cycleIncrement: 5,
-            rounding: 2.5,
-            includeWarmups: warmups,
-            advanceMode: advanceMode,
-            sessionsPerWeek: weekdays.count
-        )
+        colorIndex: 0,
+        now: TestCalendar.date(start)
     )
+}
+
+/// "65x5", "85x5+", "115x3-5+" style descriptions of one lift's sets of a kind.
+func describe(_ sets: [PrescribedSet], lift: String, kind: SetKind = .main) -> [String] {
+    sets.filter { $0.liftID == lift && $0.kind == kind }.map {
+        "\(WeightFormat.plain($0.weight))x\($0.reps)\($0.maxReps.map { "-\($0)" } ?? "")\($0.isAMRAP ? "+" : "")"
+    }
+}
+
+@MainActor
+func completeNext(_ store: WorkoutStore, programID: UUID, now: Date, amrapReps: Int? = nil) -> CompletionSummary? {
+    guard let next = store.nextWorkout(programID: programID) else { return nil }
+    store.startWorkout(next.id, now: now)
+    for set in store.workout(next.id)!.sets {
+        store.toggleSet(workoutID: next.id, setID: set.id, now: now)
+        if set.isAMRAP, let amrapReps {
+            store.updateSet(workoutID: next.id, setID: set.id) { $0.reps = amrapReps }
+        }
+    }
+    return store.completeWorkout(next.id, now: now)
 }

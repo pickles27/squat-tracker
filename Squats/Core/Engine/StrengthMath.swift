@@ -1,10 +1,12 @@
 import Foundation
 
 enum StrengthMath {
-    /// Rounds to the nearest loadable increment (e.g. 2.5 kg).
+    /// Rounds to the nearest loadable increment (e.g. 2.5 kg). Exact halves round down, the conservative
+    /// choice that also matches the 5/3/1 for Beginners worked example (TM 190 → 75% = 142.5 → 140).
     static func round(_ weight: Double, to increment: Double) -> Double {
         guard increment > 0 else { return clean(max(0, weight)) }
-        return clean(max(0, (weight / increment).rounded() * increment))
+        let steps = ((weight / increment) * 1_000_000).rounded() / 1_000_000
+        return clean(max(0, (steps - 0.5).rounded(.up) * increment))
     }
 
     /// Strips floating-point noise (76.37500000001 → 76.375).

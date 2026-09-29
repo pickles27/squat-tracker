@@ -16,27 +16,37 @@ enum SetKind: String, Codable, CaseIterable, Sendable {
         switch self {
         case .warmup: "Warm-up"
         case .main: "Main sets"
-        case .supplemental: "Supplemental"
+        case .supplemental: "First Set Last"
         }
     }
 }
 
-/// A barbell set for the program's main lift. Targets come from the program; actuals are what was lifted.
+/// A barbell set for one of the program's main lifts. Expected values come from the program;
+/// actual values are what was really lifted (pre-filled with the expected ones).
 struct WorkoutSet: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
+    var liftID: String
+    var liftName: String
     var kind: SetKind
     var targetWeight: Double
     var targetReps: Int
+    /// AMRAP sets have a minimum (`targetReps`) and sometimes a cap, e.g. the TM test's 3–5.
     var isAMRAP: Bool
+    var maxReps: Int?
     var percentOfTM: Double?
     var weight: Double
     var reps: Int
     var isCompleted = false
     var completedAt: Date?
+
+    var missedTarget: Bool { isCompleted && reps < targetReps }
 }
 
+/// Accessory set. Targets are optional: set from last time or by the user.
 struct AccessorySet: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
+    var targetWeight: Double?
+    var targetReps: Int?
     var weight: Double
     var reps: Int
     var isCompleted = false
@@ -50,19 +60,20 @@ struct AccessoryExercise: Codable, Identifiable, Hashable, Sendable {
     var sets: [AccessorySet]
 }
 
-/// Snapshot of where a session sits in its program, e.g. "Week 1 · 5s", cycle 2.
+/// Snapshot of where a session sits in its program, e.g. "Week 1 · 5s", cycle 2, day 1 of 3.
 struct SessionHeader: Codable, Hashable, Sendable {
     var title: String
     var subtitle: String
-    /// 0-based.
-    var cycle: Int
-    /// 0-based week within the cycle.
-    var week: Int
-    /// 0-based day within the program week.
+    /// 0-based week counted from the program start.
+    var programWeek: Int
+    /// 0-based global cycle; nil for weeks between cycles (e.g. a TM test week).
+    var cycle: Int?
+    var weekKind: WeekKind
     var dayInWeek: Int
-    var sessionsInWeek: Int
-    var trainingMax: Double
-    var isDeload: Bool
+    var daysInWeek: Int
+    var liftNames: [String]
+    /// Lift ID → training max used for this session.
+    var trainingMaxes: [String: Double]
 }
 
 struct Workout: Codable, Identifiable, Hashable, Sendable {
@@ -84,6 +95,7 @@ struct Workout: Codable, Identifiable, Hashable, Sendable {
     var accessories: [AccessoryExercise] = []
     var notes: String = ""
     var lastSetCompletedAt: Date?
+    var updatedAt: Date = .distantPast
 
     var isStarted: Bool { status == .inProgress || status == .completed }
 }

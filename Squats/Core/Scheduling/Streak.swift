@@ -8,8 +8,8 @@ struct StreakSummary: Hashable, Sendable {
 }
 
 /// A streak counts planned workouts completed in a row. It breaks when a workout is missed
-/// (its day plus the grace day passes without it being done or moved) or skipped on/after its day.
-/// Skipping ahead of time counts as re-planning and doesn't break it.
+/// (its day plus the grace day passes without it being done or moved) or skipped after its day ended.
+/// Skipping any time up to the end of the scheduled day counts as re-planning and doesn't break it.
 enum StreakCalculator {
     struct Event: Hashable {
         var date: Date
@@ -28,7 +28,8 @@ enum StreakCalculator {
                     events.append(Event(date: completed, isSuccess: true))
                 }
             case .skipped:
-                if workout.missedOn == nil, let skipped = workout.skippedAt, skipped >= workout.scheduledDate {
+                if workout.missedOn == nil, let skipped = workout.skippedAt,
+                   skipped >= workout.scheduledDate.addingTimeInterval(24 * 60 * 60) {
                     events.append(Event(date: workout.scheduledDate, isSuccess: false))
                 }
             case .planned, .inProgress:

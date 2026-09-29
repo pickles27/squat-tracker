@@ -94,7 +94,9 @@ struct GoogleOAuthConfiguration: Sendable {
     static let authorizationEndpoint = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
     static let revokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
-    static let scopes = ["openid", "email", "profile"]
+    static let driveAppDataScope = "https://www.googleapis.com/auth/drive.appdata"
+    /// Identity plus the hidden per-app Drive folder used for backup and sync (a non-sensitive scope).
+    static let scopes = ["openid", "email", "profile", driveAppDataScope]
 
     let clientID: String
 
@@ -141,6 +143,15 @@ struct GoogleOAuthConfiguration: Sendable {
             "code_verifier": codeVerifier,
             "grant_type": "authorization_code",
             "redirect_uri": redirectURI,
+        ])
+    }
+
+    /// Exchanges the stored refresh token for a fresh access token.
+    func refreshRequest(refreshToken: String) -> URLRequest {
+        formRequest(Self.tokenEndpoint, [
+            "client_id": clientID,
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
         ])
     }
 

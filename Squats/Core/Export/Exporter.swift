@@ -23,16 +23,33 @@ struct ExportDocument: Codable {
     struct ProgramEntry: Codable {
         var id: UUID
         var name: String
-        var type: String
-        var lift: String
+        var template: String
         var unit: String
+        var rounding: Double
         var createdAt: Date
         var startDate: String
         var archived: Bool
         var sessionsPerWeek: Int
         var workoutDays: [String]
-        var fiveThreeOne: FiveThreeOneSettings?
+        var lifts: [LiftEntry]
+        var trainingMaxAdjustments: [AdjustmentEntry]
         var workouts: [WorkoutEntry]
+    }
+
+    struct LiftEntry: Codable {
+        var id: String
+        var name: String
+        var startingTrainingMax: Double
+        var increment: Double
+    }
+
+    struct AdjustmentEntry: Codable {
+        var lift: String
+        /// 1-based program week the change applies from.
+        var fromWeek: Int
+        var trainingMax: Double
+        var date: Date
+        var reason: String?
     }
 
     struct WorkoutEntry: Codable {
@@ -45,16 +62,20 @@ struct ExportDocument: Codable {
         var missed: Bool
         /// 1-based.
         var cycle: Int?
-        /// 1-based.
+        /// 1-based program week.
         var week: Int?
+        /// 1-based day within the week.
+        var day: Int?
         var title: String?
-        var trainingMax: Double?
+        /// Lift name → training max used.
+        var trainingMaxes: [String: Double]?
         var notes: String?
         var sets: [SetEntry]
         var accessories: [AccessoryEntry]
     }
 
     struct SetEntry: Codable {
+        var lift: String
         var type: String
         var number: Int
         var targetWeight: Double
@@ -73,6 +94,8 @@ struct ExportDocument: Codable {
 
     struct AccessorySetEntry: Codable {
         var number: Int
+        var targetWeight: Double?
+        var targetReps: Int?
         var weight: Double
         var reps: Int
         var completed: Bool
@@ -102,15 +125,21 @@ enum Exporter {
             return ExportDocument.ProgramEntry(
                 id: program.id,
                 name: program.name,
-                type: program.kind.fullName,
-                lift: program.liftName,
+                template: program.template.name,
                 unit: program.unit.symbol,
+                rounding: program.rounding,
                 createdAt: program.createdAt,
                 startDate: day.string(from: program.startDate),
                 archived: program.isArchived,
                 sessionsPerWeek: program.schedule.sessionsPerWeek,
                 workoutDays: program.schedule.orderedWeekdays(calendar).map { calendar.weekdaySymbols[$0 - 1] },
-                fiveThreeOne: program.fiveThreeOne,
+                lifts: program.lifts.map {
+                    .init(id: $0.id, name: $0.name, startingTrainingMax: $0.startingTrainingMax, increment: $0.increment)
+                },
+                trainingMaxAdjustments: program.trainingMaxAdjustments.map { adjustment in
+                    .init(lift: program.lift(adjustment.liftID)?.name ?? adjustment.liftID, fromWeek: adjustment.fromProgramWeek + 1,
+                          trainingMax: adjustment.trainingMax, date: adjustment.date, reason: adjustment.reason)
+                },
                 workouts: programWorkouts.map { entry(for: $0, program: program, day: day) }
             )
         }
@@ -121,32 +150,37 @@ enum Exporter {
     }
 
     private static func entry(for workout: Workout, program: Program, day: DateFormatter) -> ExportDocument.WorkoutEntry {
-        let header = workout.header
-            ?? (workout.status == .planned ? ProgramEngine.prescription(for: program, sessionIndex: workout.sessionIndex).header : nil)
+        let planned = workout.status == .planned ? ProgramEngine.prescription(for: program, session: workout.sessionIndex) : nil
+        let header = workout.header ?? planned?.header
 
         var sets: [ExportDocument.SetEntry] = []
-        var counters: [SetKind: Int] = [:]
-        if workout.status == .planned {
-            for set in ProgramEngine.prescription(for: program, sessionIndex: workout.sessionIndex).sets {
-                counters[set.kind, default: 0] += 1
-                sets.append(.init(type: set.kind.rawValue, number: counters[set.kind]!, targetWeight: set.weight,
-                                  targetReps: set.reps, amrap: set.isAMRAP, percentOfTrainingMax: set.percentOfTM,
-                                  weight: nil, reps: nil, completed: false))
+        var counters: [String: Int] = [:]
+        func number(_ liftID: String, _ kind: SetKind) -> Int {
+            counters["\(liftID)|\(kind.rawValue)", default: 0] += 1
+            return counters["\(liftID)|\(kind.rawValue)"]!
+        }
+        if let planned {
+            for set in planned.sets {
+                sets.append(.init(lift: set.liftName, type: set.kind.rawValue, number: number(set.liftID, set.kind),
+                                  targetWeight: set.weight, targetReps: set.reps, amrap: set.isAMRAP,
+                                  percentOfTrainingMax: set.percentOfTM, weight: nil, reps: nil, completed: false))
             }
         } else {
             for set in workout.sets {
-                counters[set.kind, default: 0] += 1
-                sets.append(.init(type: set.kind.rawValue, number: counters[set.kind]!, targetWeight: set.targetWeight,
-                                  targetReps: set.targetReps, amrap: set.isAMRAP, percentOfTrainingMax: set.percentOfTM,
-                                  weight: set.weight, reps: set.reps, completed: set.isCompleted))
+                sets.append(.init(lift: set.liftName, type: set.kind.rawValue, number: number(set.liftID, set.kind),
+                                  targetWeight: set.targetWeight, targetReps: set.targetReps, amrap: set.isAMRAP,
+                                  percentOfTrainingMax: set.percentOfTM, weight: set.weight, reps: set.reps,
+                                  completed: set.isCompleted))
             }
         }
+        let liftNames = Dictionary(uniqueKeysWithValues: program.lifts.map { ($0.id, $0.name) })
 
         let accessories = workout.accessories.map { accessory in
             ExportDocument.AccessoryEntry(
                 name: accessory.name,
                 sets: accessory.sets.enumerated().map { index, set in
-                    .init(number: index + 1, weight: set.weight, reps: set.reps, completed: set.isCompleted)
+                    .init(number: index + 1, targetWeight: set.targetWeight, targetReps: set.targetReps,
+                          weight: set.weight, reps: set.reps, completed: set.isCompleted)
                 }
             )
         }
@@ -159,10 +193,13 @@ enum Exporter {
             startedAt: workout.startedAt,
             completedAt: workout.completedAt,
             missed: workout.missedOn != nil,
-            cycle: header.map { $0.cycle + 1 },
-            week: header.map { $0.week + 1 },
+            cycle: header?.cycle.map { $0 + 1 },
+            week: header.map { $0.programWeek + 1 },
+            day: header.map { $0.dayInWeek + 1 },
             title: header?.title,
-            trainingMax: header?.trainingMax,
+            trainingMaxes: header.map { header in
+                Dictionary(uniqueKeysWithValues: header.trainingMaxes.map { (liftNames[$0.key] ?? $0.key, $0.value) })
+            },
             notes: workout.notes.isEmpty ? nil : workout.notes,
             sets: sets,
             accessories: accessories
@@ -182,8 +219,9 @@ enum Exporter {
 
     static let csvColumns = [
         "program", "program_id", "workout_id", "scheduled_date", "status", "started_at", "completed_at", "missed",
-        "cycle", "week", "session", "training_max", "exercise", "set_type", "set_number",
-        "target_weight", "target_reps", "amrap", "percent_of_tm", "weight", "reps", "completed", "unit", "notes",
+        "cycle", "week", "day", "session", "exercise", "training_max", "set_type", "set_number",
+        "expected_weight", "expected_reps", "amrap", "percent_of_tm", "actual_weight", "actual_reps", "completed",
+        "unit", "notes",
     ]
 
     /// One row per set (main lift and accessories). Workouts with no sets still get one row.
@@ -200,25 +238,27 @@ enum Exporter {
                 let base = [
                     program.name, program.id.uuidString, workout.id.uuidString, workout.scheduledDate, workout.status,
                     time(workout.startedAt), time(workout.completedAt), workout.missed ? "true" : "false",
-                    int(workout.cycle), int(workout.week), workout.title ?? "", number(workout.trainingMax),
+                    int(workout.cycle), int(workout.week), int(workout.day), workout.title ?? "",
                 ]
                 var rows: [[String]] = []
                 for set in workout.sets {
                     rows.append([
-                        program.lift, set.type, String(set.number), number(set.targetWeight), String(set.targetReps),
-                        set.amrap ? "true" : "false", number(set.percentOfTrainingMax.map { $0 * 100 }),
-                        number(set.weight), int(set.reps), set.completed ? "true" : "false",
+                        set.lift, number(workout.trainingMaxes?[set.lift]), set.type, String(set.number),
+                        number(set.targetWeight), String(set.targetReps), set.amrap ? "true" : "false",
+                        number(set.percentOfTrainingMax.map { $0 * 100 }), number(set.weight), int(set.reps),
+                        set.completed ? "true" : "false",
                     ])
                 }
                 for accessory in workout.accessories {
                     for set in accessory.sets {
                         rows.append([
-                            accessory.name, "accessory", String(set.number), "", "", "false", "",
-                            number(set.weight), String(set.reps), set.completed ? "true" : "false",
+                            accessory.name, "", "accessory", String(set.number), number(set.targetWeight),
+                            int(set.targetReps), "false", "", number(set.weight), String(set.reps),
+                            set.completed ? "true" : "false",
                         ])
                     }
                 }
-                if rows.isEmpty { rows.append(Array(repeating: "", count: 10)) }
+                if rows.isEmpty { rows.append(Array(repeating: "", count: 11)) }
                 for row in rows {
                     lines.append((base + row + [program.unit, workout.notes ?? ""]).map(escape).joined(separator: ","))
                 }
